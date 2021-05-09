@@ -1,0 +1,238 @@
+###TEST E3###
+#packages
+library(readr)        # to import tabular data (e.g. csv)
+library(dplyr)        # to manipulate (tabular) data
+library(ggplot2)      # to visualize data
+library(sf)           # to handle spatial vector data
+library(terra)        # To handle raster data
+library(lubridate)    # To handle dates and times
+library(SimilarityMeasures)
+library(purrr)
+library(tidyr)
+
+#TASK 1: SEGMENTATION
+caro <- read_delim("caro60.csv",",") 
+
+# Specify a temporal window
+# The sampling interval for this dataset is 1 minute. We will use a temporal window (v) of 6 minutes
+# positions:
+# pos[n-3] to pos[n]
+# pos[n-2] to pos[n]
+# pos[n-1] to pos[n]
+# pos[n] to pos[n+1]
+# pos[n] to pos[n+2]
+# pos[n] to pos[n+3]
+
+#calculte euclidean distances between points within the temporal window (v)
+
+caro <- caro %>%
+  mutate(
+    nMinus3 = sqrt((lag(E,3)-E)^2+(lag(N,3)-N)^2),  #distance to pos -3
+    nMinus2 = sqrt((lag(E,2)-E)^2+(lag(N,2)-N)^2),  #distance to pos -2
+    nMinus1 = sqrt((lag(E,1)-E)^2+(lag(N,1)-N)^2),  #distance to pos -1
+    nPlus1 = sqrt((E-lead(E,1))^2+(N-lead(N,1))^2), #distance to pos +1
+    nPlus2 = sqrt((E-lead(E,2))^2+(N-lead(N,2))^2), #distance to pos +2
+    nPlus3 = sqrt((E-lead(E,3))^2+(N-lead(N,3))^2)  #distance to pos +3
+  )
+
+#TASK 2: Specify and apply threshold d
+# calculate the mean distance for each row
+caro <- caro %>%
+  rowwise() %>%
+  mutate(
+    stepMean = mean(c(nMinus3, nMinus2, nMinus1, nPlus1, nPlus2, nPlus3))
+  ) %>%
+  ungroup()
+
+# look at stepMean 
+summary(caro)
+# PLOT!!!! (like the one last time)
+
+
+
+
+# specify stops and moves
+caro <- caro %>% 
+  ungroup() %>%
+  mutate(static = stepMean < mean(stepMean, na.rm = TRUE))
+
+
+
+#TASK 3: Visualize segmented trajectories
+caro %>% 
+  ggplot(aes(y=N, x=E) ) +
+  geom_path()+ geom_point(aes(colour=static)) + coord_equal() 
+
+caro_filter= caro  %>%
+  flter(!static)
+
+#TASK 4: Segment based analysis
+rle_id <- function(vec){
+  x <- rle(vec)$lengths
+  as.factor(rep(seq_along(x), times=x))
+}
+
+caro <- caro %>%
+  mutate(segment_id = rle_id(static))
+
+#plot
+caro %>%
+  group_by(segment_id) %>%
+  ggplot(aes(y=N, x=E,col=segment_id ) ) +
+  geom_path()+ geom_point() + coord_equal()
+
+# determine duration of segments and remove segments <5
+
+
+# caro <- caro %>%
+#   group_by(segment_id) %>%
+#   mutate(
+#     segm_duration = as.integer(difftime(max(lead(DatetimeUTC)),min(DatetimeUTC), units="mins"))
+#   )
+# and then you can again filter out the data of yours, using the segm_duration column
+# e.g  %>% filter(segm_duration > 10) -- you can add this with a piping operator after your mutate function
+
+# Nikos 
+# the minor error you had is that you tried to use the max value of the lead(DateTimeUTC)
+# you should just use the max(DatetimeUTC) -- See below
+
+
+##FIXED:
+caro <- caro %>%
+  group_by(segment_id) %>%
+  mutate(
+    segm_duration = as.integer(difftime(max(DatetimeUTC),min(DatetimeUTC), units="mins"))
+    ) %>% 
+    filter(segm_duration > 5)  
+
+caro  %>%
+  ggplot(aes(y=N, x=E,col=segment_id)) +
+  geom_path()+ geom_point() + coord_equal()
+ 
+
+
+# TASK 5 - Similarity measures
+pedestrian <- read_delim("pedestrian.csv",",") 
+str(pedestrian)
+pedestrian$TrajID=as.factor(pedestrian$TrajID)
+
+#plot and explore
+pedestrian %>%
+  ggplot(aes(y=N, x=E)) +
+  geom_path()+ geom_point(aes(col=TrajID)) + 
+  coord_equal() + 
+  facet_wrap(~TrajID,nrow=2) +
+  labs(title="Visual comparison of the 6 trajectories", subtitle="Each subplot highlights a trajectory")
+
+
+# TASK 6 - calculate similarity 
+help(package = "SimilarityMeasures")
+
+
+# Nikos
+# As you already did, here first you have to create a matrix for every trajectory
+# I suggest you have a look at the map() function of the purrr package (?purrr::map())
+# it basically applies a specific function to every element of a vector
+# As an example, I attach you the following
+pedestrians_matrix <- pedestrian %>%
+  dplyr::select(E, N) %>% # selecting only what we need            
+  split(pedestrian$TrajID) %>%   # splitting based on the different Trajectories              
+  map(as.matrix) # applying universally the as.matrix conversion function using the purrr:map() function
+
+# So now you have a list of matrices. Each one has the respective E,N columns
+# now you can calculate for example DTW for traj 1 and 2
+DTW_1_3 = DTW(pedestrians_matrix[[1]],pedestrians_matrix[[3]]) # outcome = 50785.51137
+
+# Again I suggest to have a look the family of purr::map functions, so you can apply
+# what you need at all of your data at the same time.
+####################
+
+dtw_fun= function(y) {
+  dtw = DTW(pedestrians_matrix[[1]],pedestrians_matrix[[y]])
+  return(dtw)
+  }
+
+dtw_fun(3)
+
+
+#DTW FIXED
+dtw_fun= function(y) {
+  dtw = DTW(pedestrians_matrix[[1]],y)
+  return(dtw)
+}
+
+dtw_all
+map(pedestrians_matrix,dtw_fun)
+
+dtw_all = pedestrians_matrix %>%
+  map(dtw_fun) %>%
+  data.frame() %>%
+  pivot_longer(cols=1:6,names_to = "trajectory",values_to = "Value") %>%
+  data.frame() 
+
+dtw_all$trajectory=as.factor(dtw_all$trajectory)
+
+dtw_plot=ggplot(dtw_all, aes(x=trajectory,y=Value, fill=trajectory)) + geom_bar(stat="identity")
+dtw_plot
+
+
+#DEditDist
+editdist_fun= function(y) {
+  Editdist = EditDist(pedestrians_matrix[[1]],y)
+  return(Editdist)
+}
+
+
+editdist_all = pedestrians_matrix %>%
+  map(editdist_fun) %>%
+  data.frame() %>%
+  pivot_longer(cols=1:6,names_to = "trajectory",values_to = "Value") %>%
+  data.frame() 
+
+editdist_all$trajectory=as.factor(editdist_all$trajectory)
+
+editdist_plot=ggplot(editdist_all, aes(x=trajectory,y=Value, fill=trajectory)) + geom_bar(stat="identity")
+editdist_plot
+
+#Frechet
+frechet_fun= function(y) {
+  frechet = Frechet(pedestrians_matrix[[1]],y)
+  return(frechet)
+}
+
+
+frechet_all = pedestrians_matrix %>%
+  map(frechet_fun) %>%
+  data.frame() %>%
+  pivot_longer(cols=1:6,names_to = "trajectory",values_to = "Value") %>%
+  data.frame() 
+
+frechet_all$trajectory=as.factor(frechet_all$trajectory)
+
+frechet_plot=ggplot(frechet_all, aes(x=trajectory,y=Value, fill=trajectory)) + geom_bar(stat="identity")
+frechet_plot
+
+#LCSS
+lcss_fun= function(y) {
+  lcss = LCSS(pedestrians_matrix[[1]],y, pointSpacing=0.5, pointDistance=10,
+  errorMarg=2, returnTrans=FALSE)
+  return(lcss)
+}
+
+
+lcss_all = pedestrians_matrix %>%
+  map(lcss_fun) %>%
+  data.frame() %>%
+  pivot_longer(cols=1:6,names_to = "trajectory",values_to = "Value") %>%
+  data.frame() 
+
+lcss_all$trajectory=as.factor(lcss_all$trajectory)
+
+lcss_plot=ggplot(lcss_all, aes(x=trajectory,y=Value, fill=trajectory)) + geom_bar(stat="identity")
+lcss_plot
+
+#make plot with all similarity measures
+library(ggpubr)
+final_plot=ggarrange(dtw_plot, editdist_plot, frechet_plot,lcss_plot, ncol=2, nrow=2, common.legend=TRUE, legend = "right")
+annotate_figure(final_plot,
+                top="Computed similarities using different measures between trajectory 1 and all other trajectories")
